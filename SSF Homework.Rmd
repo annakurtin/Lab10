@@ -1,0 +1,37 @@
+---
+title: "SSF Homework"
+author: "Anna Kurtin"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# SSF Homework
+
+Due April 13th in class. 
+
+Conduct an SSF model for wolves in the Cascade, Red Deer, Wildhorse, Ranch and Bow Valley wolf packs for some covariates that we have used this semester such as one continuous variable (elevation, slope) and 1 categorical variable (open, closed landcover types).  Test for interactions with step length with covariates. Focus just on one season, and just 1 level of random effects at the pack level including intercepts and coefficients as recommended by Muff et al. (2020).  Finally, compare your ssf model estimated with a naive clogit, coxme, and glmmTMB.  Optional (can't do this year bc of issues with the packages): Try your hand at mapping the iSSF using the movement kernel, transient UD, etc.  That might take a long time though.
+
+No format for how to turn it in. Just write up the methods, a markdown document would be great. 
+Just pick a covariates like landcover or elevation
+Include step lengths and time of day (even though it's buggy) and play around with it/compare models. 
+To compare models, just look at the coefficient table (last part of what we did today) (can't use AIC for these things). Don't worry about validation.
+
+```{r}
+wolfGPS <- read.csv("Data/wolfGPS.csv")
+head(wolfGPS)
+ggplot(wolfGPS, aes(X_COORD1, Y_COORD1, colour = PACK)) +geom_point()
+
+# use the banff raster stacks from other labs 
+# pick one season
+# use pack as the hierarchy
+# play with a couple of covariates 
+# play with sampling rate
+# use the set of code where you build the SSF all in one pass 
+```
+
+
+

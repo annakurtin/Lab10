@@ -17,20 +17,21 @@ options(repos = r)
 
 
 ```{r eval=TRUE, message=FALSE, results='hide',warning=FALSE}
-
-#function to install and load required packages
-ipak <- function(pkg){
-  new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
-  if (length(new.pkg)) 
-    install.packages(new.pkg, dependencies = TRUE)
-  sapply(pkg, require, character.only = TRUE)
-}
-
-
 packages <- c("sf","terra","lubridate", "tidyverse","ggplot2","mapview","maptools","leaflet","xtable","broom","stars","magrittr","cowplot", "tmap","suncalc", "survival", "amt", "glmmTMB", "TMB")
 
+
+
 #run function to install packages
-ipak(packages)
+#function to install and load required packages
+package.check <- lapply(
+  packages,
+  FUN = function(x) {
+    if (!require(x, character.only = TRUE)) {
+      install.packages(x, dependencies = TRUE)
+      library(x, character.only = TRUE)
+    }
+  }
+)
 
 ```
 
@@ -81,7 +82,9 @@ ggplot(fisher, aes(location.long, location.lat, colour = individual.local.identi
 
 Next, let's turn fisher into a sf data frame for use in raster operations later. First we need to remove NA's, which we can do here using complete.cases and which we do later using the filter(!is.na()) command.
 ```{r}
+# Select out only columns that have a lat and long
 fisher1<-fisher[complete.cases(fisher[4:5]),]
+# define the lat long as epsg 4326
 fisher_sf <- st_as_sf(fisher1,
                       coords = c("location.long","location.lat"),
                       crs = "EPSG:4326")
@@ -111,11 +114,14 @@ The function amt::make_track creates a track (the basic building block of the am
 We will make a track just with the data from RickyT. 
 
 ```{r, warning = F}
+# make the track and transform it to UTM
+# this is a projected coordinate system that we can do euclidean math on 
 dat_R <- amt::make_track(dat_1, x, y, t, crs = 4326) %>%
      amt::transform_coords(3857)
 
 
 amt::summarize_sampling_rate(dat_R)
+# this output is all in minutes 
 ```
 _From Singer et al. (2019).._
 
@@ -125,9 +131,13 @@ The function minutes from the package tidyverse and lubridate (Grolemund & Wickh
 
 The following code implements those choices and translates from a point representation to a step (step length, turn angle) representation of the data. In the final line of the code snippet, we use the function amt::time_of_day (a wrapper around maptools:: sunriset and maptools::crepuscule; Bivand & Lewin‐Koh, 2017) to calculate if a location was taken during the day or night. If the argument include.crepuscule is set to TRUE, the function not only considers day and night, but also dawn and dusk.
 ```{r}
+# you could also loop through this to see how it changes- recommended for multi scale nature of SSFs
+# first specify the fix rate to resample it to (10 minutes), set a tolerance of how much fudge factor to include around the 10 minutes 
 stps <- amt::track_resample(dat_R, rate = minutes(10), tolerance = minutes(1)) %>%
+  # define minimym number of locations in a burst
   amt::filter_min_n_burst(min_n = 3) %>% amt::steps_by_burst() %>%
   amt::time_of_day(include.crepuscule = FALSE)
+
 
 str(stps, width = 80, strict.width = "no", nchar.max = 80, give.attr = FALSE)
 ```
@@ -141,12 +151,14 @@ https://github.com/ropensci/FedData
 and Kyle's website here:
 https://www.bocinsky.io
 
+*Kyle Bocinsky is a contributer to Fed Data 
+
 The first set of commands are to create a blank raster that we can use as an extent to 'clip' the incoming NLCD data by. We also need to make the projection a PROJECTED, cartesian UTM NAD83 projection as that is what the NLCD are stored in. 
 
 First, we have to install the R package `FedData` from github because of changes to NLCD file services which are now being delivered using a different web coverage service. 
 ```{r}
-require("devtools")
-devtools::install_github("ropensci/FedData")
+#require("devtools")
+#devtools::install_github("ropensci/FedData")
 library(FedData)
 ```
 
@@ -154,19 +166,27 @@ The key here is to remind yourself that the extent will have to be bigger than t
 ```{r, warning=F}
 ## Create a Mask Raster based on the extent of Fisher. Note that I made it arbitrarily larger. 
 crs(fisher_sf, proj=TRUE)
+# transform it
 fisher_sf2 <-st_transform(fisher_sf, crs = "EPSG:3857")
+# find the extent in UTM cartesian
 ext(fisher_sf2)
+# make a bounding box - will return the bounding of a simple feature or object
 st_bbox(fisher_sf2)
+# create an empty raster
 mask.raster<-rast()
+# define the extent of the bbox to the mask raster, making the boundaries a bit larger
 ext(mask.raster) <- c(xmin=-8240000, xmax=-8160000, ymin=5260000 , ymax=5295000)
 
+# define the resolution of the raster: NLCD is 30 m
 res(mask.raster) = 30
+# define coordinate system
 crs(mask.raster)<- "+init=epsg:3857"  
 #set all values of mask.raster to zero
 mask.raster[]<-0
 #projection(mask.raster)
 plot(mask.raster)
 plot(fisher_sf2, add = TRUE)
+# Check this - is fisher data bounded by the box?
 ```
 This confirms that our mask contains all the Fisher data, and, a buffer that is probably (?) large enough to contain all AVAILABLE samples created by the ssf available point generation method. This is a common rookie mistake. Always remember to buffer your used points. 
 
@@ -177,10 +197,13 @@ get_nlcd(mask.raster, label="landuse", year = 2011, dataset = "landcover", raw.d
 
 Note, here, I do create a directory on my local machine where to put the raw downloaded NLCD tiles and extractions. 
 ```{r, warning = F}
+# set where you want it to go
 get_nlcd(mask.raster, label = "landuse", year = 2016, dataset = "landcover", extraction.dir = "Data/extract/", force.redo = TRUE)
 land_use <- rast("Data/extract/landuse_NLCD_Land_Cover_2016.tif")
+plot(land_use)
 str(values(land_use))
 head(land_use)
+# look at the values of land cover that occur in your area
 hist(values(land_use))
 ```
 
@@ -190,15 +213,24 @@ Like any landcover model, there are a number of categories, ~ 250 for the Conter
 
 ```{r}
 unique(values(land_use))
+# make the categories 
+# filter out the empty classes 
 rat <- as.data.frame(cats(land_use)) %>% 
   filter(!is.na(Class))
 rat
 levels(land_use)<-rat
+# levels(land_use) <- rat[,-1]
+land_use
+#class(rat)
+# set the active category of a raster
+#activeCat(land_use,Class)
+plot(land_use)
 ```
 
 
 Note that incoming NLCD data is the world web mercator projection `"+init=epsg:3857"` this caused no end of grief in this weeks lab.  Therefore, we will transform the fisherSP2 object to be in this same epsg projection to match the NLCD data using a comnination of the commands `st_transform()` and `st_crs()`. 
 ```{r, warning = F}
+# reproject the fisher data to the same crs as the land_use
 fisher_sf3 <-st_transform(fisher_sf2, st_crs(land_use)) 
 
 tmap_mode("plot")
@@ -210,6 +242,8 @@ plot(fisher_sf3, add=TRUE, type="p",cex=0.5)
 ```
 
 Try adding a raster to our earlier mapview using + land_use. Note you get a bunch of error messages, and it takes a LONNG time.  But its a cool way to explore raster data in mapview. 
+
+*mapview is being deprecated*
 ```
 mapview(fisherSP3, zcol="individual.local.identifier", legend = TRUE, cex=5, lwd=2, map.type = c("OpenStreetMap.DE", "Esri.WorldShadedRelief")) + land_use
 ```
@@ -220,6 +254,7 @@ _adapted from Singer et al._
 We hypothesized that Fishers prefers forested wetlands over other landuse classes, based on previous work by Scott LaPoint. Armed with our NLCD landuse raster we create a layer called wet that is 1 for forested wetlands (category 90) and 0 otherwise using the terra packages.
 ```{r}
 wet <- land_use == 90
+class(wet)
 names(wet) <- "wet"
 #ext(wet) <- c(xmin=-8230000, xmax=-8210000, ymin=5270000, ymax=5280000)
 
@@ -227,11 +262,13 @@ names(wet) <- "wet"
 ##Lets zoom into Ricky T
 
 rickyT.raster <- rast()
+# define exxtent of ricky t
 ext(rickyT.raster) <- c(xmin=1776730, xmax=1782940, ymin=2411165, ymax=2413945)
+# define the projection of ricky t
 crs(rickyT.raster) <- "+proj=aea +lat_0=23 +lon_0=-96 +lat_1=29.5 +lat_2=45.5 +x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs"
 
 
-
+# zoom in here
 plot(wet, ext = rickyT.raster)
 plot(fisher_sf3,add=TRUE,  type="p", pch=12, cex = 0.5, ext = rickyT.raster)
 ```
@@ -258,20 +295,28 @@ Here, we will....
 #wet_layer <- as(wet, "Raster")
 
 dat1 <- amt::make_track(dat_1, x, y, t, crs = 4326) %>%
+  # transform the coordinates to be the same as wet
      amt::transform_coords(st_crs(wet))
 
+# resample the steps of ricky t
 stps <- amt::track_resample(dat1, rate = minutes(10), tolerance = minutes(1)) %>%
   amt::filter_min_n_burst(min_n = 3) %>% amt::steps_by_burst() %>%
   amt::time_of_day(include.crepuscule = FALSE)
+######### this isn't working correctly #################
 
+# extract covariates to categorize whether a step is in a wet land cover or not'# start is just speciying to compare where the animal went base on where it could have gone 
 eda1 <- stps %>% amt::extract_covariates(wet, where ="start") %>% 
   mutate(wet = if_else(wet == "TRUE", 1, 0)) %>% 
   mutate(landuse = factor(wet, levels = c(0, 1), labels = c("other", "forested wetland")))
-head(eda1)
+# str(stps)
+# head(eda1)
+# class(stps)
+############# ERROR HERE: Error in extract_covariates.steps_xy(., wet, where = "start") : no raster ###################################
 ```
 
 Next, we make some summary plots of step length, turning angle as a function of day/night, and wet and other landcover types. We bundle them together using the `cowplot` package.  
 ```{r}
+# sample nine available points 
 p1 <- eda1 %>% dplyr::select(landuse, tod = tod_end_, sl_, ta_) %>%
   gather(key, val, -landuse, -tod) %>%
   filter(key == "sl_") %>%
@@ -318,6 +363,8 @@ As mentioned above, choosing b), an iSSF, is arguably less biased and also provi
 Before we fit the ssf, we must first generate random steps using amt::random_steps(n=9) which choses 9 random points per Fisher location.  We then also extract covariates at the end points of each random step (the wet covariate here), and add time of day and the log of step length to each observation. We proceed by fitting a gamma distribution to the step
 lengths and a von Mises distribution to the turn angles using maximum likelihood (Agostinelli & Lund, 2017; Delignette‐Muller & Dutang, 2015), and use these distributions to generate and pair nine random steps with each observed step. The number of random steps effects the estimation error; the more the steps, the lower the error, but the higher the computational burden (Avgar et al., 2016). 
 ```{r}
+# establsh to sample 9 available points
+# this is defaulting to sampling at the end 
 m1 <-stps %>% amt::random_steps(n = 9) %>%
   amt::extract_covariates(wet) %>%
   mutate(wet = if_else(wet == "TRUE", 1, 0)) %>% 
@@ -334,6 +381,7 @@ The target variable case_ is one for observed steps and zero for random (or cont
 
 Note that it is challenging to visualize the SSF point generation process, and at this point, we note that the x1_ y1_ and x2_ and y2_ for the 'random' cases. I have tried to visualize the random steps here, but I think because of the short duration, they do not seem as dramatic.  
 ```{r}
+# now let's look at the brownian cloud
 m1$caseF <-as.factor(m1$case_)
 ggplot(m1, aes(x2_ ,y2_, colour = caseF)) + geom_point(aes(size = caseF, colour = caseF))
 ``` 
@@ -342,14 +390,22 @@ ggplot(m1, aes(x2_ ,y2_, colour = caseF)) + geom_point(aes(size = caseF, colour 
 
 Next we fit 3 different statistical Step dplyr::selection Function models using the amt::fit_issf to fit a conditional logistic regression model to the resulting data including movement‐related covariates with the function amt::fit _ issf (a wrapper to survival::clogit; Therneau & Grambsch, 2000). 
 
-We included three different combinations of different main effects, and their interactions, in 3 different SSF models below. These included the environmental covariate wet, the step length, and and the log of the step length (log_sl_ ) as modifiers of the shape parameter of the underlying gamma distribution. The estimated coefficient of sl_ and log_sl_ can be used to adjust the tentative shape estimate (i.e., the estimate of the shape parameter using the observed step lengths) of the underlaying gamma distribution for the step lengths. We also include interactions between wet and tod_ ,a factor with two levels—day (the reference category) and night, and between tod_ and log_sl_ .These interactions are included to the test the hypotheses that habitat dplyr::selection and displacement rate, respectively, differ between day and night.
+We included three different combinations of different main effects, and their interactions, in 3 different SSF models below. These included the environmental covariate wet, the step length, and and the log of the step length (log_sl_ ) as modifiers of the shape parameter of the underlying gamma distribution. The estimated coefficient of sl_ and log_sl_ can be used to adjust the tentative shape estimate (i.e., the estimate of the shape parameter using the observed step lengths) of the underlaying gamma distribution for the step lengths. We also include interactions between wet and tod_ ,a factor with two levels—day (the reference category) and night, and between tod_ and log_sl_ .These interactions are included to the test the hypotheses that habitat selection and displacement rate, respectively, differ between day and night.
 
 We could have also included cosines of the turning angles and their interaction with day. This choice would modify the concentration parameter of the underlying von Mises distribution for the turning angles and allow the degree of directional persistence to depend on time of day; the data summarized in Figure 1 suggest that this could be a sensible
 choice. For the sake of simplicity, however, we have assumed we have correctly modeled the degree of directional persistence and that it does not differ between day and night.
 
 ```{r}
+# new object: fit ISSF
+## same structure as clogit
+## this represents hypo that fisher selection varies w wet forest, step length, and selection varies based on time of day and that movement rate varies by time of day conditioned on unique step
+## this is looking at the ends of the steps now
 m3 <- d1 %>% amt::fit_issf(case_ ~ wet + sl_ + wet:tod_end_+ sl_:tod_end_ +strata(unique_step))
+# this now has log of the step length times time of day
+## if something affected step length, it would have a bigger effect than if something affected the log (log is a small number)
+## This is just fitting whether you have a large or small effect on step length here 
 m2 <- d1 %>% amt::fit_issf(case_ ~ wet + log_sl_ + wet:tod_end_+ log_sl_:tod_end_ + strata(unique_step))
+# time of day interacts with both log of step length and step length: large effect
 m1 <- d1 %>% amt::fit_issf(case_ ~ wet + log_sl_ + sl_ + wet:tod_end_+ log_sl_:tod_end_ + sl_:tod_end_ + strata(unique_step))
 ```
 Model 3 represents the habitat hypothesis that Fisher resource dplyr::selection differs for wet forests, and, differs between day and night (represented by the interaction between wet:tod_end_).  Movement hypotheses addressed as that step lenghts also differ between times of day, for example.  Here, the absolute step length, sl_, is modeled. 
@@ -357,7 +413,7 @@ Model 3 represents the habitat hypothesis that Fisher resource dplyr::selection 
 Model 2 represents a similar hypothesis, but instead, with the log of step length. Finally, Model 1 includes both the untransformed step length and the log of step length. 
 
 ### Model Selection
-We can conduct model dplyr::selection using AIC on these 3 models. First, I note however, that the Log-Likelihood for a conditional logistic regression model is not directly comparable to that of a traditional logistic regression model. So we cannot test, using AIC, whether conditioning on availability at every time step 'improves' model fit relative to a 'naive' logistic regression model. We will demonstrate this below when we explore mixed-effects SSF models. 
+We can conduct model selection using AIC on these 3 models. First, I note however, that the Log-Likelihood for a conditional logistic regression model is not directly comparable to that of a traditional logistic regression model. So we cannot test, using AIC, whether conditioning on availability at every time step 'improves' model fit relative to a 'naive' logistic regression model. We will demonstrate this below when we explore mixed-effects SSF models. 
 ```{r}
 AIC(m1$model, m2$model, m3$model)
 ```
@@ -366,6 +422,11 @@ So clearly, model1 is a bit better than model 2 and 3. Lets look at Model 1, and
 summary(m1)
 s <- summary(m1$model)$coefficients
 s
+# they are 2.4 times more likely (under exp(coef) for wet) to select for this habitat relative to all others
+# output wet:tod_end_night means that they are less likely to use wet forests during the night 
+# interpreting step length hypothesis
+# sl on itself is hard to interpret
+# sl:tod_end_night (expressed in meters so very small) coef indicates that step lengths are longer at night (intercept is -0.004 and coef for intrxn with night is 0.005)
 ```
 _from Singer et al. 2019_
 Inspecting the fitted model, we make the following observations: 
@@ -381,7 +442,10 @@ Besides inspecting the coefficients and their standard errors, we can calculate 
 coef(m1)
 plot_sl(m1)
 sl_m1<-sl_distr(m1)
+# sl_distr obtains stp length/turning angle distributions from random steps or a fitted model 
 ## note we will extract the scale and shape parameters of the gamma distribution for later simulating the UD
+# step length and log step length are including the scale and shape of a distrib
+# with these kinds of models, it's only the interaction that makes sense
 scale <- sl_m1$params$scale
 shape <- sl_m1$params$shape
 ```
@@ -496,13 +560,17 @@ We start again with the same data set (dat), containing data from six individual
 
 ```{r, warning = F}
 dat <- read_csv("Data/Martes pennanti LaPoint New York.csv") %>%
+  # filter out missing locations
  filter(!is.na(`location-lat`)) %>%
   dplyr::select(x = `location-long`, y = `location-lat`,
               t = `timestamp`, id = `tag-local-identifier`) %>%
+  # filter out specific animals
    filter(id %in% c(1465, 1466, 1072, 1078, 1016, 1469))
 
+# nest them by ID so that when we pass it through AMT it goes by ID first
  dat_all <- dat %>% nest(-id)
 dat_all$sex <- c("f", "f", "f", "m", "m", "m")
+# nested dataframe with six columns 
 dat_all
 ```
 dat_all is now a nested data frame with 6 rows (one for each individual) and two columns. In the first column the animal id is given, and in the second column (by default named data) the relocations of the corresponding animal are saved.
@@ -510,14 +578,18 @@ dat_all is now a nested data frame with 6 rows (one for each individual) and two
 We can now apply the steps as before for all animals. We first create a track for each animal and transform the coordinate reference system using the function amt::transform _ coords.
 ```{r,warning = F}
  dat_all <- dat_all %>%
+  # make the track
   mutate(trk = map(data, function(d) {
+    #transform from geographic to projected coord system 
      amt::make_track(d, x, y, t, crs = 4326) %>%
        amt::transform_coords(st_crs(land_use))}))
 ```
 And summarize sampling rate
 ```{r}
+#summarize sampling rates by individuals and then unnest 
 dat_all %>% mutate(sr = lapply(trk, summarize_sampling_rate)) %>%
   dplyr::select(id, sr) %>% unnest(cols = c(sr))
+# we see here that we resample to the coarsest fix rate (10 min)
 ```
 This time we see that some individuals have a 2 min sample rate and others a 10 min one. Thus, we decided to resample the tracks to the same sampling rate of 10 min (noting that (i)SSF inference is scale dependent; Signer et al., 2017) using amt::track_resample.
 
@@ -527,7 +599,8 @@ Next, we are going to test for SSF as a function of 4 different landcover types 
 First, we remind ourselves of the Raster Attribute Table (RAT) we created above.
 ```{r}
 rat
-
+# reclass the NLCD
+# take the land cover codes and recode them to one two three and five to collapse them into the categories below
 rcl <- cbind(c(11, 12, 21:24, 31, 41:43, 51:52, 71:74, 81:82, 90, 95),c(1, 1, 2, 3, 3, 3, 2, 5, 5, 5, 5, 5, 5, 5, 5, 5, 8, 8, 1, 1))
 # water, dev open, dev, barren, forest, shrub and herb, crops, wetlands
 # 1: water, wetlands
@@ -535,7 +608,10 @@ rcl <- cbind(c(11, 12, 21:24, 31, 41:43, 51:52, 71:74, 81:82, 90, 95),c(1, 1, 2,
 # 3: developed (other)
 # 5: forest, herbaceous
  # 8: crops
+# classify according to rcl
+# classify is from terra, reclassifies based on argument rcl, right indicates that it will be (1-5] right = NA closes both sides so you just take the inside 
 lu <- classify(land_use, rcl, right = NA)
+########### check the error here ###############################
 names(lu) <- "landuse"
 plot(lu)
 plot(fisher_sf3, add=TRUE)
@@ -545,16 +621,18 @@ Next, we resample the tracks from 6 individual fishers to 10 minute steps, filte
 ```{r, warning = F}
 #lu2 <- as(lu, "Raster") #changing SpatRaster object lu into a Raster Layer for use in the command amt::extract_covariates which requires a raster layer
 
+# build an SSF data frame all in one step 
+
  m1 <- dat_all %>%
    mutate(steps = map(trk, function(x) {
      x %>% amt::track_resample(rate = minutes(10), tolerance = seconds(120)) %>%
       amt::filter_min_n_burst() %>%
        amt::steps_by_burst() %>% amt::random_steps() %>%
-       amt::extract_covariates(lu, where = "both") %>% 
+       amt::extract_covariates(lu, where = "both") %>% # this does both start and end 
        mutate(unique_step = paste(burst_,step_id_,sep="_")) %>% 
        mutate(landuse_end = factor(landuse_end))
      }))
-
+# same error here: no raster ##########################################
 ```
 Note we got some NaNs produced errors - 12 of them to be precise.  We'd have to dig into exactly why, but I would not be TOO concerned in such a big dataset.  But - my guess is its because some available locations ended off the map. 
 
@@ -563,6 +641,7 @@ We then fit a simple SSF model to each individual. The main difference to the pr
 m4 <- m1 %>% mutate(fit = map(steps, ~ amt::fit_issf(., case_ ~ landuse_end +
                                                            strata(unique_step))))
 m4
+# all of the coefficients in these outputs are relative to the water/wetlands category 
 ```
 
 m4 is still a data frame with one new column: ssf that is again a list column with a fitted SSF. Lets look at 1 of these models for individual 1
@@ -572,6 +651,7 @@ m4$fit[[1]]$model
 
 Lets look at the marginal, population level averaged coefficient for landuse across our individual animals. 
 ```{r}
+# can break out the below code if we need to 
 d2 <- m4 %>% mutate(coef = map(fit, ~ broom::tidy(.x$model))) %>%
    dplyr::select(id, sex, coef) %>% unnest(cols = coef) %>%
   mutate(id = factor(id)) %>% group_by(term) %>%
@@ -582,6 +662,9 @@ d2 <- m4 %>% mutate(coef = map(fit, ~ broom::tidy(.x$model))) %>%
 
 d2$x <- 1:nrow(d2)
 d2
+# two stage, marginal estimates
+# this shows us the average coefficients across all individ
+# we see that they are avoiding everything except land cover 3, which is forests
 ```
 Finally, we make some fancy figures
 ```{r}
@@ -591,13 +674,20 @@ p1 <- m4 %>% mutate(coef = map(fit, ~ broom::tidy(.x$model, conf.int = T))) %>%
   mutate(id = factor(id)) %>%
   ggplot(., aes(x = term, y = estimate, group = id, col = id, pch = sex)) +
   geom_rect(mapping = aes(xmin = x - .4, xmax = x + .4, ymin = ymin, ymax = ymax), data = d2, inherit.aes = FALSE,fill = "grey90") +
-  geom_segment(mapping = aes(x = x - .4, xend = x + .4,y = mean, yend = mean), data = d2, inherit.aes = FALSE, size = 1) +
+  geom_segment(mapping = aes(x = x - .4, xend = x + .4,y = mean, yend = mean), data = d2, inherit.aes = FALSE, linewidth = 1) +
   geom_pointrange(aes(ymin = conf.low, ymax = conf.high), position = position_dodge(width = 0.7), size = 0.8) + 
   geom_hline(yintercept = 0, lty = 2) +
   labs(x = "Habitat", y = "Relative selection Strength") + theme_light() +
   scale_x_discrete(labels = c("Dev(open)", "Dev(other)", "Natural", "Crops"))
 
 p1
+# this is NOT a mixed effects model, just handy ways to explore if you need a mixed effects model
+# each box is marginal effects accross individual
+# lines are each individual 
+# from these plots, we see that everyone avoids developed areas and crops, while the "natural" areas are more variable
+# we also don't see a consisitent difference between males and females
+# this is a nice way to summaryze two stage sampling - taking the arithmatic average of these animals 
+# if you have more animals, this plot will get super messy 
 ```
 From here, it is easy to investigate coefficients for several animals and look at population‐level effects. The results suggest that there are some general population‐level trends. All fishers seem to prefer wetland forests and natural areas relative to developed areas (of either type), whereas considerable among‐animal variability in the coefficients for crops makes it difficult to draw firm conclusions about this landuse type. Lastly, there seems to be little differentiation based on sex.
 
@@ -631,6 +721,7 @@ fisher6 <- dat_all %>%
   unnest()
 
 fisher6
+# this looks like what we are starting with in our logistic regression stuff 
 ```
 
 
@@ -638,7 +729,7 @@ Next, we will add a String variable for landuse_end recalling that, earlier, we 
   1: water, wetlands
   2: developed (open)
   3: developed (other)
-  5: forest, herbaceouse
+  5: forest, herbaceous
   8: crops
 ```{r}
 head(fisher6$landuse_end)
@@ -647,16 +738,26 @@ fisher6$landuseName = ifelse(fisher6$landuse_end == 1, "Wet Forests",
                              ifelse(fisher6$landuse_end == 3, "Developed Other", 
                              ifelse(fisher6$landuse_end == 5, "Natural", "Crops"))))
 table(fisher6$landuseName, fisher6$landuse_end)
+# this is a cross tabulation/legend field 
 ```
 
 ## Fit a naive GLM
 First, we will fit a 'naive' GLM only focusing on the habitat processes, that is, habitat dplyr::selection for the landcover covaraites and compare them to the coefficients from the SSF fit to each individual Fisher and their two-stage population-level averages. 
 ```{r}
 model1 <- glm(case_~ I(landuse_end), data=fisher6,family=binomial(link="logit"))
+# this is just a logistic regression, nothing fancy 
+# I is interaction expansion - takes a factor and tells GLM to treat it as a category 
+
 ## I commented out these next few versions of the models fit to landuseName to make comparisons to the previously fit 6 fisher two-step models more comparable, though we have to then keep track of which landovers 2, 3, 5, and 8 are. 
 #model1 <- glm(case_~ I(landuseName), data=fisher6,family=binomial(link="logit"))
 #model1 <- glm(case_~ I(landuseName=="Developed Open") + I(landuseName=="Developed Other") +I(landuseName=="Natural")+I(landuseName=="Crops"), data=fisher6,family=binomial(link="logit"))
+
 summary(model1)
+
+# assumptions:
+## IID - every row of data indep (we know to be false bc locations affected by previous ones)
+## identiclly distrib (0:53:00 in afternoon lecture)
+## again based on coefficients they avoid everything except for the "natural" areas 
 ```
 This model gives us an intercept, which is interpreted as wet-forests, and we note that we also did not get an intercept in the SSF model above.  Lets now compare the coefficients to above:
 ```{r}
@@ -677,6 +778,7 @@ First, we recall we are comparing the two-stage averaged SSF coefficients from t
 ```{r}
 fig5 <- plot_grid(p1, figNaive)
 fig5
+# this is pretty similar to the SSF with mixed effects 
 ```
 
 We note that there are some similarities between coefficients, but, differences. 
@@ -686,7 +788,7 @@ We note that there are some similarities between coefficients, but, differences.
   Natural is          +0.033 from the Naive Logit, and  +0.044 from the SSF
   CropsDeveloped Open -0.25 from the Naive Logit, and   -0.69 from the SSF
 
-The difference in the interpretation from the different parameters highlights the 'effect' of movement, so to speak, on selection for covariates. Again, here, note we are not considering any differences between male or female, or night or day.  For example, one could conclude that the biggest difference is in the dplyr::selection of Developed Open, which we woudl underestimate the avoidance of if we failed to consider the movement processes. 
+The difference in the interpretation from the different parameters highlights the 'effect' of movement, so to speak, on selection for covariates. Again, here, note we are not considering any differences between male or female, or night or day.  For example, one could conclude that the biggest difference is in the dplyr::selection of Developed Open, which we would underestimate the avoidance of if we failed to consider the movement processes. 
 
 ## Fitting a 'Naive' cLogit Model 
 
@@ -701,6 +803,9 @@ clogit1 <- clogit(case_ ~ I(landuse_end) + strata(unique_step), data = fisher6)
 #clogit1 <- clogit(case_ ~ I(landuseName=="Developed Open") + I(landuseName=="Developed Other") +I(landuseName=="Natural")+I(landuseName=="Crops") + strata(stratum), data = fisher6)
 summary(clogit1)
 coef(clogit1)
+# notice here they aren't logistic regression coefficients, they're from a cox proportional hazards model
+# notice that wet forests have disappeared
+# we can say thaty they avoid land use cover 2,3, and 8 more than intercept, they select land use 5 more than the intercept 
 # tidy up coefficients
 clogit_1 <- broom::tidy(clogit1) %>% 
   filter(!term=="(Intercept)") 
@@ -716,6 +821,8 @@ plot_grid(p1, figclogit1)
 
 The coefficients are a bit different, but still, quite close even with the cluster for each individual Stratum. 
 
+*This shows that the conditioning isn't doing much. Since we're ignoring individuals, notice that the estimates have moved closer to the marginal effects from the SSF*
+
 ## Mixed-effect cLogit Models with `coxme`
 
 We can currently fit mixed-effects clogit models using `coxme`. We will use the `coxme` package to fit a mixed-effects conditional logistic regression model, accounting for the random effect of individual Fisher ID in this case. First, we ensure we have the `coxme` package loaded. See here for more information: https://cran.r-project.org/web/packages/coxme/vignettes/coxme.pdf 
@@ -726,10 +833,15 @@ There is no 'convenient' wrapper around the `coxme(Surv())` function like in clo
 ```{r}
 fisher6$time_ <- ifelse(fisher6$case_ == 0, 2, 1)   #2 for control, 1 for case
 table(fisher6$time_, fisher6$case_)
-head(fisher6)
+head
+# add in random effects of ID
 clogitM1<- coxme(Surv(time_,case_) ~ I(landuse_end) + strata(unique_step) + (1|id), data=fisher6)
 AIC(clogitM1)
 summary(clogitM1)
+# Output:
+## This shows us pretty much the same thing
+# indicates that we don't need a bunch of random effects
+## look at the variance it is 8.105e-05, which is vanishingly small. This means there aren't many differences between individuals 
 
 #clogitM2<- coxme(Surv(time_,case_) ~ I(landuse_end) + strata(stratum) + (1|id) +(I(landuseName=="Developed Other")|id) , data=fisher6)
 #summary(clogitM2)
@@ -763,10 +875,13 @@ However, there are - just like Lab 7 - differences between the two-staged model,
 ## Model Selection
 ```{r}
 AIC(model1, clogit1, clogitM1)
+# model 1 is max likelihood
+# clogit is partial likelihood
 ```
 This clearly confirms that really, the mixed-effect model structure is not necessary and we are fine making inferences using the 'naive' cLogit Model. Finally, we should compare manually the sum of the individual model AIC values from the two-stage modeling to really undestand if this clogit model is better than the two-step. However, these results may be idiosyncratically dependent on the small sample size of Fisher's here, 6, and the limited variation in response to just one categorical covariate.  Often, addition of mixed-effects models improves model fit substantially. 
 
-## Fitting iSSF models with glmmTMB
+## Fitting iSSF models with glmmTMB aka the right way to do it
+*ISSF integrates movement and stap selection*
 
 Next we will review the Step Selection Function section of Muff et al. (2020) and follow their advice to fit SSF models using glmmTMB with a Poisson distribution and random coefficients at the individual level. This explains in part our noted lack of variance in the random intercepts for individuals above for the `coxme` models.  
 
@@ -776,12 +891,15 @@ Muff, S., J. Signer, and J. Fieberg. 2020. Accounting for individual-specific va
 ```{r}
 head(fisher6)
 table(fisher6$landuse_end)
+
+#01:12:55
+# land use interaction, stratum for step ID, random coefficient for each individual ID
 TMBm1 <- glmmTMB(case_~ I(landuse_end) + (1|step_id_) + (0 + I(landuse_end)|id), family = poisson, data = fisher6, doFit = FALSE)
 
-TMBm1$parameters$theta[1] <-log(1e3)
+TMBm1$parameters$theta[1] <-log(1e3) # set theta one (the 0 in the 0 + I(landuse_end)|id)
 
-TMBm1$mapArg <-list(theta=factor(c(NA, 1:15)))
-glmm.TMB.random <- glmmTMB::fitTMB(TMBm1)
+TMBm1$mapArg <-list(theta=factor(c(NA, 1:15))) # 15 random coefficients; four land cover types and six fishers
+glmm.TMB.random <- glmmTMB::fitTMB(TMBm1) # fit your model (from above) using these arguments
 summary(glmm.TMB.random)
 ```
 Note that we get an error about model convergence problems with a non-positive-definitive Hessian Matrix.  See here for more details: https://cran.r-project.org/web/packages/glmmTMB/vignettes/troubleshooting.html
@@ -795,22 +913,51 @@ v5 <- coefTMB$cond[2:5]
 coefSum2 <- as.data.frame(cbind(coefSum, v5))
 names(coefSum2) <- c("Naive", "clogit", "coxme", "two-stage iSSF", "glmmTMB")
 coefSum2
+# 01:19:00
+# underwhelmed by the differences between the models
+# next thing you would want to look at is the standard error of the estimates
+## the naive model will be unfairly precise in our estimates
+# Assumptions: 1:24:00
+# native everything indep
+#clogit 
+# coxme mvmt process and var bw individ is affecting resources selection
+# two stage iSSF: overestimates, only valid for our three M and three F, allows animals to be constrained by mvmt and vary bw individuals
+# glmmTMB: allows for indivi variation in resource selection and allows for movemnet process
 # recall again that the coefficients are for males and females for two-stage iSSF, which is why there are 8 rows. 
+# the model that you choose is affected by what you want to use it for (1:25:30)
+# trying to make projections/predictions - glmmTMB - most correctly estimated uncertainty
 p1
+
+# link function for glmm.tmb.random is a poisson distribution 
+# can only compare AIC of clogit models 
+# can only compare AIC of models estimated with the same likelihood estimator 
+
+
 ```
 
 In conclusion, there docent seem to be much difference between the clogit and `coxme` models, but, there is with the `glmmTMB` model. 
 
 # SSF Homework
 
-Due April 9 in class. 
+Due April 13th in class. 
 
-Conduct an SSF model for wolves in the Cascade, Red Deer, Wildhorse, Ranch and Bow Valley wolf packs for some covariates that we have used this semester such as one continuous variable (elevation, slope) and 1 categorical variable (open, closed landcover types).  Test for interactions with step length with covariates. Focus just on one season, and just 1 level of random effects at the pack level including intercepts and coefficients as recommended by Muff et al. (2020).  Finally, compare your ssf model estimated with a naive clogit, coxme, and glmmTMB.  Optional: Try your hand at mapping the iSSF using the movement kernel, transient UD, etc.  That might take a long time though.
+Conduct an SSF model for wolves in the Cascade, Red Deer, Wildhorse, Ranch and Bow Valley wolf packs for some covariates that we have used this semester such as one continuous variable (elevation, slope) and 1 categorical variable (open, closed landcover types).  Test for interactions with step length with covariates. Focus just on one season, and just 1 level of random effects at the pack level including intercepts and coefficients as recommended by Muff et al. (2020).  Finally, compare your ssf model estimated with a naive clogit, coxme, and glmmTMB.  Optional (can't do this year bc of issues with the packages): Try your hand at mapping the iSSF using the movement kernel, transient UD, etc.  That might take a long time though.
+
+No format for how to turn it in. Just write up the methods, a markdown document would be great. 
+Just pick a covariates like landcover or elevation
+Include step lengths and time of day (even though it's buggy) and play around with it/compare models. 
 
 ```{r}
 wolfGPS <- read.csv("Data/wolfGPS.csv")
 head(wolfGPS)
 ggplot(wolfGPS, aes(X_COORD1, Y_COORD1, colour = PACK)) +geom_point()
+
+# use the banff raster stacks from other labs 
+# pick one season
+# use pack as the hierarchy
+# play with a couple of covariates 
+# play with sampling rate
+# use the set of code where you build the SSF all in one pass 
 ```
 
 
