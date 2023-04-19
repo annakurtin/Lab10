@@ -21,17 +21,134 @@ Include step lengths and time of day (even though it's buggy) and play around wi
 To compare models, just look at the coefficient table (last part of what we did today) (can't use AIC for these things). Don't worry about validation.
 
 ```{r}
-wolfGPS <- read.csv("Data/wolfGPS.csv")
-head(wolfGPS)
-ggplot(wolfGPS, aes(X_COORD1, Y_COORD1, colour = PACK)) +geom_point()
-
 # use the banff raster stacks from other labs 
-# pick one season
+# pull this from the RSF project
+# pick one season: Summer
+# one continuous variable: elevation
+# one categorical variable: habitat type
 # use pack as the hierarchy
 # play with a couple of covariates 
 # play with sampling rate
-# use the set of code where you build the SSF all in one pass 
+# use the set of code where you build the SSF all in one pass
+
+```
+
+```{r Load Packages}
+packages <- c("sf","terra","lubridate", "tidyverse","ggplot2","mapview","maptools","leaflet","xtable","broom","stars","magrittr","cowplot", "tmap","suncalc", "survival", "amt", "glmmTMB", "TMB")
+
+#function to install and load required packages
+package.check <- lapply(
+  packages,
+  FUN = function(x) {
+    if (!require(x, character.only = TRUE)) {
+      install.packages(x, dependencies = TRUE)
+      library(x, character.only = TRUE)
+    }
+  }
+)
+```
+
+```{r Load in Wolf Data and Clean It}
+wolfGPS <- read.csv("Data/wolf_data.csv")
+head(wolfGPS)
+ggplot(wolfGPS, aes(x_coord1, y_coord1, colour = pack)) +geom_point()
+wolf_summer <- wolfGPS %>% filter(season=="summer")
+dev.off()
+ggplot(wolf_summer, aes(x_coord1, y_coord1, colour = pack)) +geom_point()
+# Summer only gives us ranch and red deer
+wolf_winter <- wolfGPS %>% filter(season=="winter")
+dev.off()
+ggplot(wolf_winter, aes(x_coord1, y_coord1, colour = pack)) +geom_point()
+# winter gives us more points
 ```
 
 
+```{r Convert Wolf Data to Shapefile}
+# convert wolf data into a shapefile
+# Select out only columns that have a lat and long
+wolf1<-wolf_summer[complete.cases(wolf_summer[19:20]),]
+# define the lat long as epsg 4326
+wolf1_sf <- st_as_sf(wolf1,
+                      coords = c("x_coord1","y_coord1"),
+                      crs = "EPSG:4326")
+plot(wolf1_sf)
+# This is plotting a lot of different columns as separately - might need to loop back to this
+```
 
+
+```{r Load in Raster Data}
+
+# Find which raster stack to use
+prey_lancov <- rast(".\\Data\\lab6Stack.tif")
+plot(prey_lancov)
+
+# extract covariates of interest
+elev <- prey_lancov[[7]]
+habtype <- prey_lancov[[10]]
+ 
+```
+
+
+```{r Set up Track Data}
+# set up the track data
+
+# make a track from this data
+wolf_track <- amt::make_track(wolf1, x_coord1, y_coord1, date_time, crs = 4326)
+# need to work with the datetime - split it into two  
+
+# check the fix rate - may need to resample to account for low fixes
+
+# first specify the fix rate to resample it to (10 minutes), set a tolerance of how much fudge factor to include around the 10 minutes 
+stps <- amt::track_resample(dat_R, rate = minutes(10), tolerance = minutes(1)) %>%
+  # define minimym number of locations in a burst
+  amt::filter_min_n_burst(min_n = 3) %>% amt::steps_by_burst() %>%
+  amt::time_of_day(include.crepuscule = FALSE)
+# you could also loop through this to see how it changes- recommended for multi scale nature of SSFs
+
+
+str(stps, width = 80, strict.width = "no", nchar.max = 80, give.attr = FALSE)
+
+```
+
+
+```{r Look at Relationships}
+# extract covariates to categorize whether a step is in a wet land cover or not'# start is just speciying to compare where the animal went base on where it could have gone 
+eda1 <- stps %>% amt::extract_covariates(wet, where ="start") %>% 
+  mutate(wet = if_else(wet == "TRUE", 1, 0)) %>% 
+  mutate(landuse = factor(wet, levels = c(0, 1), labels = c("other", "forested wetland")))
+# this area was throwing an error in my code in class
+
+# can do exploratory data analysis and plotting
+```
+
+
+```{r Fit iSSF}
+# Fit models to data
+TMBm1 <- glmmTMB(case_~ I(landuse_end) + (1|step_id_) + (0 + I(landuse_end)|id), family = poisson, data = fisher6, doFit = FALSE)
+# line 897 from class notes
+
+# Run AIC on models
+```
+
+```{r Navie Clogit}
+clogit1 <- clogit(case_ ~ I(landuse_end) + strata(unique_step), data = fisher6)
+#clogit1 <- clogit(case_ ~ I(landuseName=="Developed Open") + I(landuseName=="Developed Other") +I(landuseName=="Natural")+I(landuseName=="Crops") + strata(stratum), data = fisher6)
+summary(clogit1)
+coef(clogit1)
+# line 802 in notes
+
+```
+
+```{r coxme model}
+clogitM1<- coxme(Surv(time_,case_) ~ I(landuse_end) + strata(unique_step) + (1|id), data=fisher6)
+AIC(clogitM1)
+summary(clogitM1)
+# line 838 in notes
+
+
+```
+
+```{r glmmTMB}
+# look in previous notes for this
+
+```
