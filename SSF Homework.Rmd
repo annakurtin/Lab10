@@ -67,36 +67,10 @@ wolf_winter <- wolfGPS %>% filter(season=="winter")
 
 ```{r Convert Wolf Data to Shapefile}
 # convert wolf data into a shapefile
-# Select out only columns that have a lat and long
+# Select out only columns that have a lat (x_coord1) and long (y_coord1)
 wolf1<-wolf_summer[complete.cases(wolf_summer[19:20]),]
-# define the lat long as epsg 4326
-wolf1_sf <- st_as_sf(wolf1,
-                      coords = c("x_coord1","y_coord1"),
-                      crs = "EPSG:4326")
-#plot(wolf1_sf)
-# This is plotting a lot of different columns as separately - might need to loop back to this
-```
-
-
-```{r Load in Raster Data}
-
-# Find which raster stack to use
-prey_lancov <- rast(".\\Data\\lab6Stack.tif")
-plot(prey_lancov)
-
-# extract covariates of interest
-elev <- prey_lancov[[7]]
-habtype <- prey_lancov[[10]]
- 
-```
-
-
-```{r Set up Track Data}
-# nest the data by the wolf ID
-wolf_summer2 <- wolf_summer %>% nest(data=wolfid)
-
 # Unite date and time into a column
-wolf_summer2 <- wolf_summer2 %>% unite(datetime,c(date,time),sep=" ")
+wolf_summer2 <- wolf1 %>% unite(datetime,c(date,time),sep=" ")
 #  class(wolf_summer4$datetime) this is a character
 
 # Reformat the date and time column into class datetime 
@@ -104,14 +78,56 @@ wolf_summer2 <- wolf_summer2 %>% mutate(datetime_new=as.POSIXct(datetime,format=
 # format that you specify for what it's coming in as
 
 # remove the NAs in the datetime_new column
-wolf_summer2<-wolf_summer2[complete.cases(wolf_summer5[24]),]
-################ come back and make this into an sf object ###################
+wolf_summer2<-wolf_summer2[complete.cases(wolf_summer2[24]),]
 
-# make a track from this data
-wolf_track <- amt::make_track(wolf_summer2, x_coord1, y_coord1, datetime_new, crs = 4326)
+# define the lat long as epsg 4326
+wolf1_sf <- st_as_sf(wolf1,
+                      coords = c("long","lat"),
+                      crs = "EPSG:4326")
+#dev.off()
+plot(wolf1_sf$geometry)
+# This is plotting a lot of different columns as separately - might need to loop back to this
+```
 
-# Make a track for multiple animals
-# How to do this from the lab? line 558 start here ########################
+
+```{r Load in Raster Data}
+ext(wolf1_sf)
+crs(wolf1_sf) #4326
+
+# pull from lab 3
+
+lancov <- rast(".\\Data\\landcover16.tif")
+plot(lancov)
+crs(lancov) #26911
+# match the projection
+lancov2 <- lancov %>% terra::project("EPSG:4326", method = "near")
+crs(lancov2)
+ext(lancov)
+
+# # Testing it
+# plot(lancov2)
+# plot(wolf1_sf, add=TRUE) # two points are off here but overall it looks fine
+
+# pull out one land cover
+
+elevation <- rast(".\\Data\\Elevation2.tif")
+# match the projection
+crs(elevation) #26911
+elev2 <- elevation %>% terra::project("EPSG:4326", method = "near")
+
+# # Testing how data looks
+# plot(elev2)
+# plot(wolf1_sf$geometry, add=TRUE) # This looks good now
+ 
+```
+
+
+```{r Set up Track Data}
+# nest the data by the wolf ID
+wolf_summer3 <- wolf_summer2 %>% nest(data=wolfid)
+
+# # make a track from this data
+wolf_track <- amt::make_track(wolf_summer3, x_coord1, y_coord1, datetime_new, crs = 4326)
 
 
 # check the fix rate - may need to resample to account for low fixes
@@ -203,5 +219,56 @@ summary(clogitM1)
 #
 # wolf_summer %>% mutate(time)
 # DailyHours <- DailyHours %>% mutate(Date=strptime(Date, format="%Y%M%D"))
+
+#prey_lancov <- rast(".\\Data\\lab6Stack.tif")
+#plot(prey_lancov)
+# extract covariates of interest
+# elev <- prey_lancov[[7]]
+# plot(elev)
+# habtype <- prey_lancov[[10]]
+
+
+
+# # Unite date and time into a column
+# wolf_summer2 <- wolf_summer2 %>% unite(datetime,c(date,time),sep=" ")
+# #  class(wolf_summer4$datetime) this is a character
+# 
+# # Reformat the date and time column into class datetime 
+# wolf_summer2 <- wolf_summer2 %>% mutate(datetime_new=as.POSIXct(datetime,format="%m/%d/%y %H:%M"))
+# # format that you specify for what it's coming in as
+# 
+# # remove the NAs in the datetime_new column
+# wolf_summer2<-wolf_summer2[complete.cases(wolf_summer2[24]),]
+# 
+# 
+# # # nest the data by the wolf ID
+# # wolf_summer2 <- wolf_summer %>% nest(data=wolfid)
+# # 
+# # # make a track from this data
+# wolf_track <- amt::make_track(wolf_summer2, x_coord1, y_coord1, datetime_new, crs = 4326)
+# 
+# # Make a track for multiple animals ######################
+# # Line 558 from lab 10
+# #unique(wolf1$pack)
+# # select only the data you want
+# # wolf_summer2 %>%
+# #   dplyr::select(x = x_coord1, y = y_coord1,
+# #               t = `datetime_new`, id = `wolfid`) # can add to filter out specific animals
+# 
+# # nest the data by the wolf ID
+# wolf_summer3 <- wolf_summer2 %>% nest(data=wolfid)
+# # 
+# # wolves_track <- wolf_summer3 %>%
+# #  # make the track
+# #   mutate(trk = map(data, function(d) {
+# #      amt::make_track(d, x_coord1, y_coord1, datetime_new, crs = 4326) }))
+# # 
+# # # %>%
+# # #        amt::transform_coords(st_crs(elev2))
+# 
+# 
+# # # make a track from this data
+# wolf_track <- amt::make_track(wolf_summer3, x_coord1, y_coord1, datetime_new, crs = 4326)
+
 
 ```
