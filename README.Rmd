@@ -98,7 +98,9 @@ mapview(fisher_sf, zcol="individual.local.identifier", legend = TRUE, cex=5, lwd
 What is always amazing to me is how urban these Fisher's are. Whereas in the west, Fishers tend to be more of a wilderness species. These are living in downtown urban center parks making a tidy living eating gray squirrels, I bet. 
 Next we will bringing Fisher data from a single individual, ID 1016, Fisher M1 (known as "RickyT"), into a MOVE object.
 ```{r, warnings = F}
-dat <- read_csv("Data/Martes pennanti LaPoint New York.csv") %>%
+dat <- read_csv("Data/Martes pennanti LaPoint New York.csv")
+str(dat)
+dat %>%
    filter(!is.na(`location-lat`)) %>%
    dplyr::select(x = `location-long`, y = `location-lat`,
            t = `timestamp`, id = `tag-local-identifier`) %>%
@@ -118,6 +120,7 @@ We will make a track just with the data from RickyT.
 # this is a projected coordinate system that we can do euclidean math on 
 dat_R <- amt::make_track(dat_1, x, y, t, crs = 4326) %>%
      amt::transform_coords(3857)
+# error: ..1 must be a vector, not a <standardGeneric> object
 
 
 amt::summarize_sampling_rate(dat_R)

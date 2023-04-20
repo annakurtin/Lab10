@@ -31,6 +31,8 @@ To compare models, just look at the coefficient table (last part of what we did 
 # play with sampling rate
 # use the set of code where you build the SSF all in one pass
 
+# styleR
+
 ```
 
 ```{r Load Packages}
@@ -53,12 +55,12 @@ wolfGPS <- read.csv("Data/wolf_data.csv")
 head(wolfGPS)
 ggplot(wolfGPS, aes(x_coord1, y_coord1, colour = pack)) +geom_point()
 wolf_summer <- wolfGPS %>% filter(season=="summer")
-dev.off()
-ggplot(wolf_summer, aes(x_coord1, y_coord1, colour = pack)) +geom_point()
+#dev.off()
+#ggplot(wolf_summer, aes(x_coord1, y_coord1, colour = pack)) +geom_point()
 # Summer only gives us ranch and red deer
 wolf_winter <- wolfGPS %>% filter(season=="winter")
-dev.off()
-ggplot(wolf_winter, aes(x_coord1, y_coord1, colour = pack)) +geom_point()
+#dev.off()
+#ggplot(wolf_winter, aes(x_coord1, y_coord1, colour = pack)) +geom_point()
 # winter gives us more points
 ```
 
@@ -71,7 +73,7 @@ wolf1<-wolf_summer[complete.cases(wolf_summer[19:20]),]
 wolf1_sf <- st_as_sf(wolf1,
                       coords = c("x_coord1","y_coord1"),
                       crs = "EPSG:4326")
-plot(wolf1_sf)
+#plot(wolf1_sf)
 # This is plotting a lot of different columns as separately - might need to loop back to this
 ```
 
@@ -90,13 +92,30 @@ habtype <- prey_lancov[[10]]
 
 
 ```{r Set up Track Data}
-# set up the track data
+# nest the data by the wolf ID
+wolf_summer2 <- wolf_summer %>% nest(data=wolfid)
+
+# Unite date and time into a column
+wolf_summer2 <- wolf_summer2 %>% unite(datetime,c(date,time),sep=" ")
+#  class(wolf_summer4$datetime) this is a character
+
+# Reformat the date and time column into class datetime 
+wolf_summer2 <- wolf_summer2 %>% mutate(datetime_new=as.POSIXct(datetime,format="%m/%d/%y %H:%M"))
+# format that you specify for what it's coming in as
+
+# remove the NAs in the datetime_new column
+wolf_summer2<-wolf_summer2[complete.cases(wolf_summer5[24]),]
+################ come back and make this into an sf object ###################
 
 # make a track from this data
-wolf_track <- amt::make_track(wolf1, x_coord1, y_coord1, date_time, crs = 4326)
-# need to work with the datetime - split it into two  
+wolf_track <- amt::make_track(wolf_summer2, x_coord1, y_coord1, datetime_new, crs = 4326)
+
+# Make a track for multiple animals
+# How to do this from the lab? line 558 start here ########################
+
 
 # check the fix rate - may need to resample to account for low fixes
+# resample this to two hours
 
 # first specify the fix rate to resample it to (10 minutes), set a tolerance of how much fudge factor to include around the 10 minutes 
 stps <- amt::track_resample(dat_R, rate = minutes(10), tolerance = minutes(1)) %>%
@@ -121,6 +140,7 @@ eda1 <- stps %>% amt::extract_covariates(wet, where ="start") %>%
 # can do exploratory data analysis and plotting
 ```
 
+If exponentiated coefficient is 1, the effect is super small
 
 ```{r Fit iSSF}
 # Fit models to data
@@ -130,7 +150,7 @@ TMBm1 <- glmmTMB(case_~ I(landuse_end) + (1|step_id_) + (0 + I(landuse_end)|id),
 # Run AIC on models
 ```
 
-```{r Navie Clogit}
+```{r Naive Clogit}
 clogit1 <- clogit(case_ ~ I(landuse_end) + strata(unique_step), data = fisher6)
 #clogit1 <- clogit(case_ ~ I(landuseName=="Developed Open") + I(landuseName=="Developed Other") +I(landuseName=="Natural")+I(landuseName=="Crops") + strata(stratum), data = fisher6)
 summary(clogit1)
@@ -150,5 +170,38 @@ summary(clogitM1)
 
 ```{r glmmTMB}
 # look in previous notes for this
+
+```
+
+
+```{r Code Graveyard}
+# first filter out one individual from the data to make the track 
+# wolf_ids <- unique(wolf_summer$wolfid)
+# # loop through creating a track for each wolf ID
+# for (id in wolf_ids){
+#   #create a dataframe for each 
+#   print(id)
+#   individ_data <- wolf_summer %>% filter(wolfid == id)
+#   # make a track data for each individual
+#   print(nrow(individ_data))
+# }
+
+
+# set up the track data
+#wolf_tracks <- wolf_summer3 %>% dplyr::select(x = `x_coord1`, y = `y_coord1`,
+#           t = `time`)
+
+# make a datetime 
+#wolf_summer3 %>% separate(date, into = c(Day, Month, Year), sep="/")
+#fake_data <- fake_data %>% mutate(Day = as.numeric(Day),Month=as.numeric(Month),Year=as.numeric(Year))
+#                     
+#fake_data <- fake_data %>% mutate(DateTime = make_datetime(year=Year,month=Month,day=Day,hour=Hour,min=Min,sec=Sec))
+
+# make the date and time into a time
+#wolf_summer4 <- wolf_summer %>% mutate(date = as.Date(date,format="%m/%d/%Y"))
+
+#
+# wolf_summer %>% mutate(time)
+# DailyHours <- DailyHours %>% mutate(Date=strptime(Date, format="%Y%M%D"))
 
 ```
