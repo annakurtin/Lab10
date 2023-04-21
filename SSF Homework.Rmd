@@ -129,9 +129,13 @@ wolf_summer3 <- wolf_summer2 %>% nest(data=wolfid)
 # # make a track from this data
 wolf_track <- amt::make_track(wolf_summer3, x_coord1, y_coord1, datetime_new, crs = 4326)
 
-
 # check the fix rate - may need to resample to account for low fixes
+amt::summarize_sampling_rate(wolf_track)
+#summarize sampling rates by individuals and then unnest 
+wolf_summer3 %>% mutate(sr = lapply(wolf_track, summarize_sampling_rate)) %>%
+  dplyr::select(wolfid, sr) %>% unnest(cols = c(sr))
 # resample this to two hours
+plot(wolf_track)
 
 # first specify the fix rate to resample it to (10 minutes), set a tolerance of how much fudge factor to include around the 10 minutes 
 stps <- amt::track_resample(dat_R, rate = minutes(10), tolerance = minutes(1)) %>%
