@@ -73,6 +73,7 @@ wolf1<-wolf_summer[complete.cases(wolf_summer[19:20]),]
 wolf_summer2 <- wolf1 %>% unite(datetime,c(date,time),sep=" ")
 #  class(wolf_summer4$datetime) this is a character
 
+class(wolf_track)
 # Reformat the date and time column into class datetime 
 wolf_summer2 <- wolf_summer2 %>% mutate(datetime_new=as.POSIXct(datetime,format="%m/%d/%y %H:%M"))
 # format that you specify for what it's coming in as
@@ -97,12 +98,20 @@ crs(wolf1_sf) #4326
 # pull from lab 3
 
 lancov <- rast(".\\Data\\landcover16.tif")
-plot(lancov)
-crs(lancov) #26911
+#plot(lancov)
+#levels(lancov)
+#crs(lancov) #26911
 # match the projection
 lancov2 <- lancov %>% terra::project("EPSG:4326", method = "near")
-crs(lancov2)
-ext(lancov)
+#crs(lancov2)
+#ext(lancov)
+
+# looking at conifer is 1,2, or 3
+# select the levels of lancov that are 1,2, or 3
+conif <- lancov2$HABITATTYPE %in% c("Open Conifer","Moderate Conifer","Closed Conifer")
+plot(conif)
+
+
 
 # # Testing it
 # plot(lancov2)
@@ -125,40 +134,88 @@ elev2 <- elevation %>% terra::project("EPSG:4326", method = "near")
 ```{r Set up Track Data}
 # nest the data by the wolf ID
 wolf_summer3 <- wolf_summer2 %>% nest(data=wolfid)
+str(wolf_summer3)
+# test for duplicated time stamps
+# would need to go through and do these by individual
+test <- wolf_summer3[duplicated(wolf_summer3$datetime_new),]
 
 # # make a track from this data
-wolf_track <- amt::make_track(wolf_summer3, x_coord1, y_coord1, datetime_new, crs = 4326)
+wolf_track <- amt::make_track(wolf_summer3, x_coord1, y_coord1, datetime_new, crs = 4326) %>% amt::transform_coords(3857)
+str(wolf_track)
+
+#wolf_track_test <- as.numeric(wolf_track)
 
 # check the fix rate - may need to resample to account for low fixes
 amt::summarize_sampling_rate(wolf_track)
+# mean is 74 min, max is 390479 and min is zero
+# this output is all in minutes 
+# how many locations for each individual wolf?
+
+
 #summarize sampling rates by individuals and then unnest 
 wolf_summer3 %>% mutate(sr = lapply(wolf_track, summarize_sampling_rate)) %>%
   dplyr::select(wolfid, sr) %>% unnest(cols = c(sr))
-# resample this to two hours
-plot(wolf_track)
 
-# first specify the fix rate to resample it to (10 minutes), set a tolerance of how much fudge factor to include around the 10 minutes 
-stps <- amt::track_resample(dat_R, rate = minutes(10), tolerance = minutes(1)) %>%
-  # define minimym number of locations in a burst
+plot(wolf_track)
+# COME BACK TO THIS ######################
+
+
+# resample this to two hours
+# first specify the fix rate to resample it to (2 hours), set a tolerance of how much fudge factor to include around the 10 minutes 
+stps <- amt::track_resample(wolf_track, rate = minutes(120), tolerance = minutes(1)) %>%
+  # define minimum number of locations in a burst
   amt::filter_min_n_burst(min_n = 3) %>% amt::steps_by_burst() %>%
   amt::time_of_day(include.crepuscule = FALSE)
 # you could also loop through this to see how it changes- recommended for multi scale nature of SSFs
 
-
+# check the structure here
 str(stps, width = 80, strict.width = "no", nchar.max = 80, give.attr = FALSE)
 
 ```
 
+# Exploratory analysis of step lengths and turning angles
 
+If covariates are extracted at the end of the step, they are typically included in the model as main effects, to answer questions of the type: How do covariates influence where the animal moves? 
+
+In contrary, if covariates are extracted at the beginning of the step, they are typically included in the model as an interaction with movement characteristics (step length, log of the step length, or the cosine of the turn angle), to test hypotheses of the type: Do animals move faster/more directed, if they start in a given habitat? 
+
+Finally, covariate values at the start and the end of a step can also be included in the model as an interaction with each other, to test hypotheses of the type: Are animals more likely to stay in a given habitat, if they are already in that habitat?
 ```{r Look at Relationships}
 # extract covariates to categorize whether a step is in a wet land cover or not'# start is just speciying to compare where the animal went base on where it could have gone 
-eda1 <- stps %>% amt::extract_covariates(wet, where ="start") %>% 
-  mutate(wet = if_else(wet == "TRUE", 1, 0)) %>% 
-  mutate(landuse = factor(wet, levels = c(0, 1), labels = c("other", "forested wetland")))
+#the example here uses "wet" which I'm pretty sure is a binary of 1/0 if it's wet forest or not
+conifer_raster <- raster(conif)
+eda1 <- stps %>% amt::extract_covariates(conifer_raster, where ="end") %>% 
+  mutate(conifer = if_else(conif == "TRUE", 1, 0)) %>% 
+  mutate(landuse = factor(conif, levels = c(0, 1), labels = c("other", "conifer forest")))
 # this area was throwing an error in my code in class
 
-# can do exploratory data analysis and plotting
+# Error in `mutate()`:
+# ℹ In argument: `conifer = if_else(conif == "TRUE", 1, 0)`.
+# Caused by error:
+# ! [==] Can only match character values if x is categorical
+
+# can do exploratory data analysis and plotting (maybe? might not need to do this)
 ```
+
+
+```{r Generate Random Steps}
+#Line 369
+
+# establsh to sample 9 available points
+# this is defaulting to sampling at the end 
+m1 <-stps %>% amt::random_steps(n = 9) %>%
+  amt::extract_covariates(conif) %>%
+  mutate(conif = if_else(conif == "TRUE", 1, 0)) %>% 
+  amt::time_of_day(include.crepuscule = FALSE) %>%
+  mutate(unique_step = paste(burst_,step_id_,sep="_")) %>% 
+  mutate(log_sl_ = log(sl_)) -> d1
+
+#Error in fitdistrplus::fitdist(x, "gamma", keepdata = FALSE, start = list(scale = scale_closed,  : 
+#  data must be a numeric vector of length greater than 1
+```
+
+
+# Fitting iSSF
 
 If exponentiated coefficient is 1, the effect is super small
 
