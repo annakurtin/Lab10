@@ -1,0 +1,279 @@
+---
+title: "AKurtin SSF Homework"
+author: "Anna Kurtin"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning=FALSE,message=FALSE)
+```
+
+```{r Load Packages, include=FALSE}
+packages <- c("sf","terra","lubridate", "tidyverse","ggplot2","mapview","maptools","leaflet","xtable","broom","stars","magrittr","cowplot", "tmap","suncalc", "survival", "amt", "glmmTMB", "TMB","coxme")
+
+#function to install and load required packages
+package.check <- lapply(
+  packages,
+  FUN = function(x) {
+    if (!require(x, character.only = TRUE)) {
+      install.packages(x, dependencies = TRUE)
+      library(x, character.only = TRUE)
+    }
+  }
+)
+```
+
+# SSF Homework
+
+## Part 1: Data Preparation
+
+To start, I'll be reading in the wolf GPS data. It looks like summer has data on less packs, but I'm interested in examining the effects of the covariates I looked at in the RSF in the context of summer. I am interested to see what their habitat selection looks like when they aren't as constrained by ice and snow.
+
+```{r Load in Wolf Data}
+wolfGPS <- read.csv("Data/wolf_data.csv")
+# Take a look at what this GPS data looks like
+ggplot(wolfGPS, aes(x_coord1, y_coord1, colour = pack)) +
+  geom_point()+
+  labs(title ="All Wolf GPS Locations")
+
+# Pick a season:
+wolf_summer <- wolfGPS %>% filter(season=="summer")
+# unique(wolf_summer$wolfuid)
+ggplot(wolf_summer, aes(x_coord1, y_coord1, colour = pack)) +
+  geom_point() +
+  labs(title ="Wolf Summer GPS Locations")
+# Summer only gives us ranch and red deer
+
+wolf_winter <- wolfGPS %>% filter(season=="winter")
+ggplot(wolf_winter, aes(x_coord1, y_coord1, colour = pack)) +
+  geom_point() +
+  labs(title ="Wolf Winter GPS Locations")
+# winter gives us more points
+```
+
+Next, I'll clean up the data and create a shapefile from it. 
+```{r Clean and Convert to Shapefile}
+# convert wolf data into a shapefile
+# Select out only columns that have a lat and long 
+wolf2<-wolf_summer[complete.cases(wolf_summer[10:11]),]
+
+# Unite date and time into a column
+wolf_summer2 <- wolf2 %>% unite(datetime,c(date,time),sep=" ")
+
+# Reformat the date and time column into class datetime 
+wolf_summer2 <- wolf_summer2 %>% mutate(datetime_new=as.POSIXct(datetime,format="%m/%d/%y %H:%M"))
+
+# remove the NAs in the datetime_new column
+wolf_summer2<-wolf_summer2[complete.cases(wolf_summer2[24]),]
+# Check to make sure there are no NA's
+wolf_summer2 %>% filter(is.na(xcoord)==TRUE)
+wolf_summer2 %>% filter(is.na(ycoord)==TRUE)
+wolf_summer2 %>% filter(is.na(datetime_new)==TRUE)
+
+# for future plotting, make the wolf data into a shapefile
+# define the lat long as epsg 4326
+wolf_sf <- st_as_sf(wolf_summer2,
+                      coords = c("long","lat"),
+                      crs = "EPSG:4326")
+```
+
+Next, I'll load in the spatial data. The two covariates I am interested in looking at in this analysis is conifer land cover and elevation.
+
+```{r Load in Raster Data}
+# pull the landcover data in from lab 3
+lancov <- rast(".\\Data\\landcover16.tif")
+# Check the crs for this raster
+crs(lancov) # looks like it is in crs 26911, so let's change it to match our wolf shapefile
+# match the projection
+lancov2 <- lancov %>% terra::project("EPSG:4326", method = "near")
+# looking at conifer is 1,2, or 3
+# select the levels of lancov that are 1,2, or 3
+conif <- lancov2$HABITATTYPE %in% c("Open Conifer","Moderate Conifer","Closed Conifer")
+plot(conif)
+#convert to a raster for future use
+conif_r <- as(conif, "Raster")
+# The name of this raster is undefined, so let's name it
+names(conif_r) <- "conifer"
+
+## Test how data looks
+plot(conif, main = "Conifer Land Cover and Wolf Points")
+plot(wolf_sf, add=TRUE) # two points are off here but overall it looks fine
+
+
+# Now let's pull in the elevation data
+elevation <- rast(".\\Data\\Elevation2.tif")
+# check the projection
+crs(elevation) #26911
+# reproject to match the others
+elev2 <- elevation %>% terra::project("EPSG:4326", method = "near")
+# convert to a raster for future use
+elev2_r <- as(elev2, "Raster")
+
+## Test how data looks
+plot(elev2, main = "Elevation and Wolf Points")
+plot(wolf_sf$geometry, add=TRUE) # This looks good now
+```
+
+
+To fit my SSF, I need to take the wolf GPS points and make track data.
+
+```{r Set up Track Data}
+# nest the data by the wolf ID
+wolf_summer3 <- wolf_summer2 %>% nest(data = c(-wolfuid,-pack))
+
+# Make the track data with a function
+track_all <- wolf_summer3 %>%
+ # make the track
+ mutate(trk = map(data, function(d) {
+   #transform from geographic to projected coord system 
+    amt::make_track(tbl=d, .x=long, .y=lat, .t=datetime_new, crs = 4326) %>% # changed from tbl=d, .x=xcoord, .y=ycoord, .t=datetime_new
+      amt::transform_coords(st_crs(conif))}))
+
+
+#summarize sampling rates by individuals and then unnest 
+samp_rates <- track_all %>% mutate(sr = lapply(trk, summarize_sampling_rate)) %>%
+ dplyr::select(wolfuid, sr) %>% unnest(cols = c(sr))
+samp_rates
+
+```
+
+Looking at the sampling rates, I see that the highest median fix rate is 6 hours, so I'll be resampling them all to 6 hours. 
+
+Now, I'll extract covariates to make an SSF dataframe. 
+
+```{r}
+# Make an SSF dataframe
+track_resamp_all <- track_all %>%
+   mutate(steps = map(trk, function(x) {
+     x %>% amt::track_resample(rate = minutes(360), tolerance = minutes(10)) %>% # resample the tracks for each individual
+      amt::filter_min_n_burst() %>% # filter them into bursts
+       amt::steps_by_burst() %>% amt::random_steps() %>% # filter them into bursts again
+       amt::extract_covariates(covariates = elev2, where = "both") %>% # this does both start and end | names the column the same as the column and adds on where 
+       mutate(unique_step = paste(burst_,step_id_,sep="_")) %>% 
+#       mutate(elev_start = factor(Elevation2_start)) %>% 
+#       mutate(elev_end = factor(Elevation2_end)) %>% # filter them into bursts again
+       amt::extract_covariates(covariates = conif, where = "both") %>% # this does both start and end | names the column the same as the column and adds on where 
+       mutate(conifer_start = factor(HABITATTYPE_start)) %>% 
+       mutate(conifer_end = factor(HABITATTYPE_end)) 
+     }))
+
+# Unnest this data
+tracks_unnest <- track_resamp_all %>% 
+  dplyr::select(wolfuid,pack, steps) %>% 
+  unnest()
+
+# Clean up the data
+tracks_unnest <- tracks_unnest %>% rename(elev_start = Elevation2_start, elev_end = Elevation2_end) %>% select(-c(HABITATTYPE_start,HABITATTYPE_end))
+
+# Make a column for pack as a factor
+tracks_unnest <- tracks_unnest %>% mutate(pack_fac=factor(pack))
+```
+
+## Part 2: Statistical Analysis 
+
+First, let's do some exploratory analyses of the effects of the covariates on step length to see if we need to include an interaction. 
+
+```{r Exploratory Analysis}
+# Look at step length and turning angle distributions
+## sl_ for step length and ta_ for turning angle, time end is t2_
+
+# for making plots:
+tracks_plotting <- tracks_unnest %>% filter(is.na(conifer_end)==FALSE) %>% filter(is.na(elev_end)==FALSE)
+
+# Relationship between step length and conifer land cover
+# make a bar plot of sl_ for conifer_end = TRUE and FALSE
+ggplot(data = tracks_plotting, mapping = aes(x = conifer_end, y = sl_)) + 
+  geom_boxplot() + facet_wrap(~case_)
+# doesn't look like there's a difference
+
+# Relationship between elevation and land cover
+ggplot(data = tracks_plotting, mapping = aes(x = elev_end, y = sl_)) + 
+  geom_point()+ facet_wrap(~case_)
+# slight increase at the end but no clear trend
+
+# Test for interactions with step length with covariates
+ggplot(data = tracks_plotting, mapping = aes(x = elev_end, y = sl_, color = conifer_end)) + 
+  geom_point()+ facet_wrap(~case_)
+
+ 
+```
+
+We also don't really see a trend here in the step length of our used points in relation to our covariates, so we don't need to include an interaction. Now, let's fit some models to our data. 
+
+**1. Naive GLM**
+
+```{r}
+# Fit a naive GLM
+nGLM <- glm(case_~ I(conifer_end)+elev_end, data=tracks_unnest,family=binomial(link="logit"))
+# Take a look at the exponentiated coefficients
+coefs_nGLM <- exp(nGLM$coefficients)
+
+```
+
+Here, we see that there is a very weak (litte to no effect) of elevation on selection, and there is a negative effect of conifer land cover on selection. 
+
+**2. Step Selection Function**
+
+```{r SSF}
+# Fit an SSF Model
+# hypothesis that habitat selection varies as a function of conifer presence, elevation, and the interaction of the conifer and elevation
+ssf_mod <- tracks_unnest %>% amt::fit_issf(case_ ~ conifer_end + elev_end + conifer_end:elev_end + strata(unique_step))
+summary(ssf_mod)
+ssf_sum <- summary(ssf_mod$model)$coefficients
+
+# Look at the outputs 
+ssf_sum
+AIC(ssf_mod)
+```
+
+Here, we see that again there is little to no effect of elevation and no effect of the interaction between elevation and conifer. The effect of conifer is negative and is stronger than elevation.
+
+**3. Clogit**
+
+```{r Naive Clogit}
+# Fit a clogit model
+clogit1 <- clogit(case_ ~ I(conifer_end) +(elev_end) + strata(unique_step),data = tracks_unnest)
+#clogit1 <- clogit(case_ ~ I(landuseName=="Developed Open") + I(landuseName=="Developed Other") +I(landuseName=="Natural")+I(landuseName=="Crops") + strata(stratum), data = fisher6)
+summary(clogit1)
+exp(coef(clogit1))
+AIC(clogit1)
+```
+
+Here, we seee that there is little to no effect of elevation on selection and a negative effect of conifer land cover on selection.
+
+**4. Coxme**
+
+```{r coxme model}
+# Create a time variable
+tracks_unnest$time_ <- ifelse(tracks_unnest$case_ == 0, 2, 1)   #2 for control, 1 for case
+# Fit a coxme model with random intercepts and random slopes 
+clogitM1<- coxme(Surv(time_,case_) ~ conifer_end + elev_end + conifer_end:elev_end  + (1|pack_fac) + (0+pack_fac) , data=tracks_unnest)
+AIC(clogitM1)
+summary(clogitM1)
+```
+
+Here, we see that there is little to no effect of elevation and the conifer:elevation interaction on selection. Conifer landcover has a negative effect on selection, and the pack identify had a positive effect of selection.
+
+
+**5. iSSF with glmmTMB**
+
+```{r glmmTMB}
+# Fit glmmTMB model with random effect of step ID and random slope of pack on conifer 
+TMBm1 <- glmmTMB(case_~ I(conifer_end) + elev_end + (1|step_id_) + (0 + I(conifer_end)|pack_fac), family = poisson, data = tracks_unnest, doFit = FALSE)
+
+TMBm1$parameters$theta[1] <-log(1e3) # set theta one (the 0 in the 0 + I(landuse_end)|id)
+TMBm1$mapArg <-list(theta=factor(c(NA, 1:3)))
+glmm.TMB.random <- glmmTMB::fitTMB(TMBm1) # fit your model (from above) using these arguments
+summary(glmm.TMB.random)
+# Look at the coefficients
+coefTMB <- fixef(glmm.TMB.random)
+```
+
+Here, we see that elevation has little to no effect on selection and conifer land cover has a negative effect on selection.
+
+
+# Part 3: Inference
+
+In this analysis, we saw that when we compare the ssf model estimated a naive clogit, coxme, and glmmTMB, each model gave us the same interpretation, which is that elevation has little to no effect on selection but conifer land cover has a negative effect. Therefore, we can conclude that it is not necessary to incorporate the movement model to determine the effect of only elevation and conifer land cover on habitat selection, and employing a simpler model will give us the same interpreation. 
+

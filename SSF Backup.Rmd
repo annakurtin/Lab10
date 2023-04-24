@@ -1,3 +1,4 @@
+
 ---
 title: "SSF Homework"
 author: "Anna Kurtin"
@@ -36,7 +37,7 @@ To compare models, just look at the coefficient table (last part of what we did 
 ```
 
 ```{r Load Packages}
-packages <- c("sf","terra","lubridate", "tidyverse","ggplot2","mapview","maptools","leaflet","xtable","broom","stars","magrittr","cowplot", "tmap","suncalc", "survival", "amt", "glmmTMB", "TMB")
+packages <- c("sf","terra","lubridate", "tidyverse","ggplot2","mapview","maptools","leaflet","xtable","broom","stars","magrittr","cowplot", "tmap","suncalc", "survival", "amt", "glmmTMB", "TMB","coxme")
 
 #function to install and load required packages
 package.check <- lapply(
@@ -170,9 +171,6 @@ In contrary, if covariates are extracted at the beginning of the step, they are 
 Finally, covariate values at the start and the end of a step can also be included in the model as an interaction with each other, to test hypotheses of the type: Are animals more likely to stay in a given habitat, if they are already in that habitat?
 ```{r}
 # create an SSF dataframe
-
-
-
 # If time:
 # # you could also loop through this to see how it changes- recommended for multi scale nature of SSFs
 
@@ -255,6 +253,8 @@ nGLM_1
 # nGLM_2 <- glm(case_~ elev_end, data=tracks_unnest,family=binomial(link="logit"))
 # nGLM_2
 
+# weak negative effect of conifer and elevation
+# could be because wolves aren't using higher elevations in the summer?
 ```
 
 
@@ -284,24 +284,23 @@ If exponentiated coefficient is 1, the effect is super small
 
 ```{r Naive Clogit}
 #no random effects
- 
+# This is taking a long time to run?
 clogit1 <- clogit(case_ ~ conifer_end + elev_end + conifer_end:elev_end, data = tracks_unnest)
+# clogit1 <- clogit(case_ ~ conifer_end + elev_end + conifer_end:elev_end, data = tracks_unnest)
 #clogit1 <- clogit(case_ ~ I(landuseName=="Developed Open") + I(landuseName=="Developed Other") +I(landuseName=="Natural")+I(landuseName=="Crops") + strata(stratum), data = fisher6)
-summary(clogit1)
+summary_clogit <- summary(clogit1)
 coef(clogit1)
 # line 802 in notes
 
 ```
 
 ```{r coxme model}
-
 # random intercepts and random slopes 
 
-clogitM1<- coxme(Surv(time_,case_) ~ conifer_end + elev_end + conifer_end:elev_end  + (1|id)+(1|pack_fac) + (0+pack_fac) , data=tracks_unnest)
+clogitM1<- coxme(Surv(dt_,case_) ~ conifer_end + elev_end + conifer_end:elev_end +(1|pack_fac) + (0+pack_fac) , data=tracks_unnest)
 AIC(clogitM1)
 summary(clogitM1)
 # line 838 in notes
-
 
 ```
 
@@ -310,7 +309,7 @@ summary(clogitM1)
 # Fit models to data
 # making a random 
 # land use interaction, stratum for step ID, random coefficient for each individual ID
-TMBm1 <- glmmTMB(case_~ I(conifer_end) + elev_end + (1|step_id_) + (0 + I(conifer_end)|wolfuid), family = poisson, data = tracks_unnest, doFit = FALSE)
+TMBm1 <- glmmTMB(case_~ I(conifer_end) + elev_end + (1|pack) + (0 + pack), family = poisson, data = tracks_unnest, doFit = FALSE)
 
 # change to pack
 # 1|step_id_ is random intercept
@@ -318,12 +317,16 @@ TMBm1 <- glmmTMB(case_~ I(conifer_end) + elev_end + (1|step_id_) + (0 + I(conife
 
 TMBm1$parameters$theta[1] <-log(1e3) # set theta one (the 0 in the 0 + I(landuse_end)|id)
 
-TMBm1$mapArg <-list(theta=factor(c(NA, 1:15))) # 15 random coefficients; four land cover types and six fishers
+TMBm1$mapArg <-list(theta=factor(c(NA, 1:20))) # 15 random coefficients; four land cover types and six fishers (1 land cover type and 5 packs)
+# tried 1-20 and none of them worked
 # UNK use of these numbers 
 glmm.TMB.random <- glmmTMB::fitTMB(TMBm1) # fit your model (from above) using these arguments
+# ERROR: a map factor length must equal parameter length ##############################
 summary(glmm.TMB.random)
 # line 897 from class notes
 coefTMB <- fixef(glmm.TMB.random)
+
+
 v5 <- coefTMB$cond[2:5]
 coefSum2 <- as.data.frame(cbind(coefSum, v5))
 names(coefSum2) <- c("Naive", "clogit", "coxme", "two-stage iSSF", "glmmTMB")
@@ -502,5 +505,3 @@ coefSum2
 #   xlab("Step length [m]") + theme_light() +
 #   ylab("Density") +
 #   theme(legend.title = element_blank())
-
-```

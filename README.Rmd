@@ -884,7 +884,7 @@ AIC(model1, clogit1, clogitM1)
 This clearly confirms that really, the mixed-effect model structure is not necessary and we are fine making inferences using the 'naive' cLogit Model. Finally, we should compare manually the sum of the individual model AIC values from the two-stage modeling to really undestand if this clogit model is better than the two-step. However, these results may be idiosyncratically dependent on the small sample size of Fisher's here, 6, and the limited variation in response to just one categorical covariate.  Often, addition of mixed-effects models improves model fit substantially. 
 
 ## Fitting iSSF models with glmmTMB aka the right way to do it
-*ISSF integrates movement and stap selection*
+*ISSF integrates movement and step selection*
 
 Next we will review the Step Selection Function section of Muff et al. (2020) and follow their advice to fit SSF models using glmmTMB with a Poisson distribution and random coefficients at the individual level. This explains in part our noted lack of variance in the random intercepts for individuals above for the `coxme` models.  
 
